@@ -42,6 +42,7 @@ OPT_STEPS = 500                  # Gradient steps taken on the design vector.
 OPT_LR = 2e-2                    # Step size when optimizing the curve through the surrogate.
 HIDDEN_DIM = 128                 # Width of the hidden layers in the MLP surrogate.
 SMOOTHNESS_WEIGHT = 1.0          # Penalize large second differences in the optimized curve.
+UNDERPREDICT_WEIGHT = 3.0        # Penalize overly optimistic surrogate predictions during training.
 
 # Output files for the training run.
 SUMMARY_PATH = os.path.join(RESULTS_DIR, "train_summary.json")
@@ -190,6 +191,12 @@ def evaluate_model(
     return float(np.mean(losses)), mae, metrics, preds, targets
 
 
+def asymmetric_mse_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    residual = pred - target
+    weights = torch.where(residual < 0.0, UNDERPREDICT_WEIGHT, 1.0)
+    return (weights * residual.pow(2)).mean()
+
+
 def train_surrogate(
     model: nn.Module,
     train_loader: torch.utils.data.DataLoader,
@@ -218,7 +225,7 @@ def train_surrogate(
 
             optimizer.zero_grad(set_to_none=True)
             pred = model(xb)
-            loss = F.mse_loss(pred, yb)
+            loss = asymmetric_mse_loss(pred, yb)
             loss.backward()
             optimizer.step()
 
@@ -238,7 +245,7 @@ def train_surrogate(
         if epoch == 1 or epoch % 50 == 0 or epoch == EPOCHS:
             print(
                 f"epoch {epoch:04d} | "
-                f"train_mse_norm: {train_losses[-1]:.6f} | "
+                f"train_obj_norm: {train_losses[-1]:.6f} | "
                 f"test_mse_norm: {test_losses[-1]:.6f} | "
                 f"test_r2: {test_metrics['r2']:.6f} | "
                 f"test_mae: {test_metrics['mae']:.6f}"
@@ -407,6 +414,7 @@ def main() -> None:
             "best_epoch": best_epoch,
             "learning_rate": LEARNING_RATE,
             "seed": SEED,
+            "underpredict_weight": UNDERPREDICT_WEIGHT,
         },
         "optimization_config": {
             "steps": OPT_STEPS,
