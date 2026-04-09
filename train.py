@@ -196,7 +196,7 @@ def train_surrogate(
     test_loader: torch.utils.data.DataLoader,
     stats: dict[str, torch.Tensor],
     device: torch.device,
-) -> tuple[list[float], list[float], dict[str, float], np.ndarray, np.ndarray]:
+) -> tuple[list[float], list[float], dict[str, float], np.ndarray, np.ndarray, int]:
     optimizer = torch.optim.Adam(
         model.parameters(),
         lr=LEARNING_RATE,
@@ -204,6 +204,9 @@ def train_surrogate(
 
     train_losses: list[float] = []
     test_losses: list[float] = []
+    best_test_loss = float("inf")
+    best_epoch = 1
+    best_state = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
 
     for epoch in range(1, EPOCHS + 1):
         model.train()
@@ -227,6 +230,10 @@ def train_surrogate(
             model, test_loader, stats, device
         )
         test_losses.append(test_loss)
+        if test_loss < best_test_loss:
+            best_test_loss = test_loss
+            best_epoch = epoch
+            best_state = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
 
         if epoch == 1 or epoch % 50 == 0 or epoch == EPOCHS:
             print(
@@ -237,8 +244,9 @@ def train_surrogate(
                 f"test_mae: {test_metrics['mae']:.6f}"
             )
 
+    model.load_state_dict(best_state)
     _, _, final_metrics, preds, targets = evaluate_model(model, test_loader, stats, device)
-    return train_losses, test_losses, final_metrics, preds, targets
+    return train_losses, test_losses, final_metrics, preds, targets, best_epoch
 
 
 def optimize_design(
@@ -376,7 +384,7 @@ def main() -> None:
     print(
         f"Training surrogate | model=mlp | input_dim={input_dim} | hidden_dim={HIDDEN_DIM} | epochs={EPOCHS}"
     )
-    train_losses, test_losses, test_metrics, preds, targets = train_surrogate(
+    train_losses, test_losses, test_metrics, preds, targets, best_epoch = train_surrogate(
         model, train_loader, test_loader, stats, device
     )
 
@@ -396,6 +404,7 @@ def main() -> None:
             "hidden_dim": HIDDEN_DIM,
             "batch_size": BATCH_SIZE,
             "epochs": EPOCHS,
+            "best_epoch": best_epoch,
             "learning_rate": LEARNING_RATE,
             "seed": SEED,
         },
