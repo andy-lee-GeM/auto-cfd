@@ -41,7 +41,6 @@ SEED = 42                        # Reproducible training and optimization behavi
 OPT_STEPS = 500                  # Gradient steps taken on the design vector.
 OPT_LR = 2e-2                    # Step size when optimizing the curve through the surrogate.
 HIDDEN_DIM = 128                 # Width of the hidden layers in the MLP surrogate.
-MONOTONIC_WEIGHT = 10.0          # Penalize uphill segments in the optimized curve.
 SMOOTHNESS_WEIGHT = 1.0          # Penalize large second differences in the optimized curve.
 
 # Output files for the training run.
@@ -67,6 +66,13 @@ def augment_design_with_endpoints(y_interior: torch.Tensor) -> torch.Tensor:
     y0 = torch.full((y_interior.size(0), 1), Y0, dtype=y_interior.dtype, device=y_interior.device)
     y1 = torch.full((y_interior.size(0), 1), Y1, dtype=y_interior.dtype, device=y_interior.device)
     return torch.cat((y0, y_interior, y1), dim=1)
+
+
+def design_from_drop_logits(drop_logits: torch.Tensor) -> torch.Tensor:
+    total_drop = Y0 - Y1
+    drops = F.softmax(drop_logits, dim=1) * total_drop
+    cumulative_drop = torch.cumsum(drops[:, :-1], dim=1)
+    return Y0 - cumulative_drop
 
 
 def normalize_design(y_interior: torch.Tensor, stats: dict[str, torch.Tensor]) -> torch.Tensor:
@@ -249,8 +255,14 @@ def optimize_design(
         dtype=torch.float32,
         device=device,
     ).unsqueeze(0)
-    design = nn.Parameter(initial_design.clone())
-    optimizer = torch.optim.Adam([design], lr=OPT_LR)
+    initial_drops = torch.full(
+        (1, initial_design.size(1) + 1),
+        (Y0 - Y1) / (initial_design.size(1) + 1),
+        dtype=torch.float32,
+        device=device,
+    )
+    drop_logits = nn.Parameter(initial_drops.log())
+    optimizer = torch.optim.Adam([drop_logits], lr=OPT_LR)
 
     best_pred_time = float("inf")
     best_design = None
@@ -258,25 +270,19 @@ def optimize_design(
 
     for step in range(1, OPT_STEPS + 1):
         optimizer.zero_grad(set_to_none=True)
-        clamped = clamp_design(design)
-        pred_norm = model(normalize_design(clamped, stats))
+        current_design = design_from_drop_logits(drop_logits)
+        pred_norm = model(normalize_design(current_design, stats))
         pred_time = denormalize_time(pred_norm, stats).mean()
-        full_design = augment_design_with_endpoints(clamped)
-        monotonic_penalty = F.relu(full_design[:, 1:] - full_design[:, :-1]).pow(2).mean()
+        full_design = augment_design_with_endpoints(current_design)
         smoothness_penalty = (
             full_design[:, 2:] - 2.0 * full_design[:, 1:-1] + full_design[:, :-2]
         ).pow(2).mean()
-        objective = (
-            pred_time
-            + MONOTONIC_WEIGHT * monotonic_penalty
-            + SMOOTHNESS_WEIGHT * smoothness_penalty
-        )
+        objective = pred_time + SMOOTHNESS_WEIGHT * smoothness_penalty
         objective.backward()
         optimizer.step()
 
         with torch.no_grad():
-            design.copy_(clamp_design(design))
-            current_design = design.detach().clone()
+            current_design = design_from_drop_logits(drop_logits).detach().clone()
             current_pred = float(
                 denormalize_time(
                     model(normalize_design(current_design, stats)),
@@ -396,7 +402,6 @@ def main() -> None:
         "optimization_config": {
             "steps": OPT_STEPS,
             "learning_rate": OPT_LR,
-            "monotonic_weight": MONOTONIC_WEIGHT,
             "smoothness_weight": SMOOTHNESS_WEIGHT,
         },
         "test_metrics": test_metrics,
