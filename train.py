@@ -40,6 +40,7 @@ LEARNING_RATE = 1e-3             # Optimizer step size for the surrogate weights
 SEED = 42                        # Reproducible training and optimization behavior.
 OPT_STEPS = 500                  # Gradient steps taken on the design vector.
 OPT_LR = 2e-2                    # Step size when optimizing the curve through the surrogate.
+HIDDEN_DIM = 128                 # Width of the hidden layers in the MLP surrogate.
 
 # Output files for the training run.
 SUMMARY_PATH = os.path.join(RESULTS_DIR, "train_summary.json")
@@ -127,6 +128,21 @@ def cycloid_time() -> float:
 def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
     np.random.seed(seed)
+
+
+class MLPSurrogate(nn.Module):
+    def __init__(self, input_dim: int, hidden_dim: int = HIDDEN_DIM) -> None:
+        super().__init__()
+        self.network = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, 1),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.network(x)
 
 
 def evaluate_model(
@@ -331,10 +347,10 @@ def main() -> None:
     stats = {key: value.to(device) for key, value in stats.items()}
 
     input_dim = int(payload["x_train"].shape[1])
-    model = nn.Linear(input_dim, 1).to(device)
+    model = MLPSurrogate(input_dim).to(device)
 
     print(
-        f"Training surrogate | model=linear | input_dim={input_dim} | epochs={EPOCHS}"
+        f"Training surrogate | model=mlp | input_dim={input_dim} | hidden_dim={HIDDEN_DIM} | epochs={EPOCHS}"
     )
     train_losses, test_losses, test_metrics, preds, targets = train_surrogate(
         model, train_loader, test_loader, stats, device
@@ -352,6 +368,8 @@ def main() -> None:
     gap_pct = 100.0 * (true_opt_time - true_cycloid) / true_cycloid
     summary = {
         "train_config": {
+            "model": "mlp",
+            "hidden_dim": HIDDEN_DIM,
             "batch_size": BATCH_SIZE,
             "epochs": EPOCHS,
             "learning_rate": LEARNING_RATE,
