@@ -41,6 +41,8 @@ SEED = 42                        # Reproducible training and optimization behavi
 OPT_STEPS = 500                  # Gradient steps taken on the design vector.
 OPT_LR = 2e-2                    # Step size when optimizing the curve through the surrogate.
 HIDDEN_DIM = 128                 # Width of the hidden layers in the MLP surrogate.
+MONOTONIC_WEIGHT = 10.0          # Penalize uphill segments in the optimized curve.
+SMOOTHNESS_WEIGHT = 1.0          # Penalize large second differences in the optimized curve.
 
 # Output files for the training run.
 SUMMARY_PATH = os.path.join(RESULTS_DIR, "train_summary.json")
@@ -59,6 +61,12 @@ def build_trajectory(interior_y_values: np.ndarray) -> np.ndarray:
     x_values = np.concatenate(([X0], interior_x_values, [X1])).astype(np.float64)
     y_values = np.concatenate(([Y0], interior_y_values, [Y1])).astype(np.float64)
     return np.column_stack((x_values, y_values))
+
+
+def augment_design_with_endpoints(y_interior: torch.Tensor) -> torch.Tensor:
+    y0 = torch.full((y_interior.size(0), 1), Y0, dtype=y_interior.dtype, device=y_interior.device)
+    y1 = torch.full((y_interior.size(0), 1), Y1, dtype=y_interior.dtype, device=y_interior.device)
+    return torch.cat((y0, y_interior, y1), dim=1)
 
 
 def normalize_design(y_interior: torch.Tensor, stats: dict[str, torch.Tensor]) -> torch.Tensor:
@@ -253,7 +261,17 @@ def optimize_design(
         clamped = clamp_design(design)
         pred_norm = model(normalize_design(clamped, stats))
         pred_time = denormalize_time(pred_norm, stats).mean()
-        pred_time.backward()
+        full_design = augment_design_with_endpoints(clamped)
+        monotonic_penalty = F.relu(full_design[:, 1:] - full_design[:, :-1]).pow(2).mean()
+        smoothness_penalty = (
+            full_design[:, 2:] - 2.0 * full_design[:, 1:-1] + full_design[:, :-2]
+        ).pow(2).mean()
+        objective = (
+            pred_time
+            + MONOTONIC_WEIGHT * monotonic_penalty
+            + SMOOTHNESS_WEIGHT * smoothness_penalty
+        )
+        objective.backward()
         optimizer.step()
 
         with torch.no_grad():
@@ -378,6 +396,8 @@ def main() -> None:
         "optimization_config": {
             "steps": OPT_STEPS,
             "learning_rate": OPT_LR,
+            "monotonic_weight": MONOTONIC_WEIGHT,
+            "smoothness_weight": SMOOTHNESS_WEIGHT,
         },
         "test_metrics": test_metrics,
         "times": {
