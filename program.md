@@ -1,114 +1,209 @@
-# autoresearch
+# auto-cfd
 
-This is an experiment to have the LLM do its own research.
+This is an experiment to have the LLM do its own research on the
+brachistochrone surrogate problem.
 
 ## Setup
 
 To set up a new experiment, work with the user to:
 
-1. **Agree on a run tag**: propose a tag based on today's date (e.g. `mar5`). The branch `autoresearch/<tag>` must not already exist — this is a fresh run.
-2. **Create the branch**: `git checkout -b autoresearch/<tag>` from current master.
-3. **Read the in-scope files**: The repo is small. Read these files for full context:
-   - `README.md` — repository context.
-   - `prepare.py` — fixed constants, data prep, tokenizer, dataloader, evaluation. Do not modify.
-   - `train.py` — the file you modify. Model architecture, optimizer, training loop.
-4. **Verify data exists**: Check that `~/.cache/autoresearch/` contains data shards and a tokenizer. If not, tell the human to run `uv run prepare.py`.
-5. **Initialize results.tsv**: Create `results.tsv` with just the header row. The baseline will be recorded after the first run.
-6. **Confirm and go**: Confirm setup looks good.
+1. Agree on a run tag based on today's date, for example `apr8-demo`.
+2. Create a fresh branch:
+   `git checkout -b auto-cfd/<tag>`
+3. Read the in-scope files for context:
+   - `README.md`
+   - `prepare.py`
+   - `train.py`
+   - `program.md`
+4. Verify that the fixed dataset already exists at:
+   `results/brachistochrone/dataset.pt`
+5. Do not run `prepare.py` during the experiment loop. The dataset is already
+   generated and must stay fixed across all experiments.
+6. Use this interpreter for all runs:
+   `/home/andylee/.venvs/auto-cfd-cpu/bin/python`
+7. Initialize:
+   - `results.tsv` with the header row only
+   - `notes.md` as an untracked running lab notebook for experiment notes
+8. Run the baseline with the current `train.py`.
 
-Once you get confirmation, kick off the experimentation.
+## Goal
 
-## Experimentation
+The goal is to make the surrogate in `train.py` approximate the true simulator
+as accurately as possible on the fixed dataset, and to keep that behavior
+stable as the dataset grows.
 
-Each experiment runs on a single GPU. The training script runs for a **fixed time budget of 5 minutes** (wall clock training time, excluding startup/compilation). You launch it simply as: `uv run train.py`.
+The agent should treat `train.py` as the research surface. Everything there is
+fair game:
 
-**What you CAN do:**
-- Modify `train.py` — this is the only file you edit. Everything is fair game: model architecture, optimizer, hyperparameters, training loop, batch size, model size, etc.
+- model architecture
+- hidden size
+- network depth
+- optimizer
+- learning rate
+- batch size
+- number of epochs
+- loss shaping
+- training loop details
+- surrogate optimization settings
 
-**What you CANNOT do:**
-- Modify `prepare.py`. It is read-only. It contains the fixed evaluation, data loading, tokenizer, and training constants (time budget, sequence length, etc).
-- Install new packages or add dependencies. You can only use what's already in `pyproject.toml`.
-- Modify the evaluation harness. The `evaluate_bpb` function in `prepare.py` is the ground truth metric.
+The primary objective is surrogate quality on held-out data:
 
-**The goal is simple: get the lowest val_bpb.** Since the time budget is fixed, you don't need to worry about training time — it's always 5 minutes. Everything is fair game: change the architecture, the optimizer, the hyperparameters, the batch size, the model size. The only constraint is that the code runs without crashing and finishes within the time budget.
+1. lower prediction error on true travel time
+2. improve `test_r2`
+3. lower `test_mae`
+4. keep the model simple enough to generalize when more data is added later
 
-**VRAM** is a soft constraint. Some increase is acceptable for meaningful val_bpb gains, but it should not blow up dramatically.
+The downstream optimized trajectory is still useful, but it is a secondary
+check. It helps verify that the surrogate behaves sensibly when used for design
+optimization.
 
-**Simplicity criterion**: All else being equal, simpler is better. A small improvement that adds ugly complexity is not worth it. Conversely, removing something and getting equal or better results is a great outcome — that's a simplification win. When evaluating whether to keep a change, weigh the complexity cost against the improvement magnitude. A 0.001 val_bpb improvement that adds 20 lines of hacky code? Probably not worth it. A 0.001 val_bpb improvement from deleting code? Definitely keep. An improvement of ~0 but much simpler code? Keep.
+Training time is a hard practical constraint. Each experiment should stay under
+5 minutes on the CPU setup for this repo. Increase model complexity
+incrementally so runtime remains within budget.
 
-**The first run**: Your very first run should always be to establish the baseline, so you will run the training script as is.
+## What You Can Modify
 
-## Output format
+- `train.py`
 
-Once the script finishes it prints a summary like this:
+## What You Should Not Modify
 
+- `prepare.py`
+- dependency files
+- the fixed dataset at `results/brachistochrone/dataset.pt`
+
+The point of this run is to compare modeling and training changes on the same
+data.
+
+## Environment
+
+Fresh agents have had trouble running this repo when they guess the interpreter.
+Do not guess.
+
+Always run experiments with:
+
+```bash
+/home/andylee/.venvs/auto-cfd-cpu/bin/python train.py
 ```
+
+If you need to inspect the dataset or rerun the baseline, use the same
+interpreter.
+
+## Evaluation Priority
+
+Use this priority order:
+
+1. Higher surrogate `R2`
+2. Lower surrogate `MAE`
+3. Lower other held-out prediction error metrics
+4. Sensible downstream optimized-trajectory behavior
+5. Simpler code and more stable behavior
+
+Do not optimize only for training loss. Held-out surrogate accuracy is the main
+target, because the model needs to stay reliable as more data is added later.
+
+## Output Format
+
+Each run of `train.py` prints a summary like:
+
+```text
 ---
-val_bpb:          0.997900
-training_seconds: 300.1
-total_seconds:    325.9
-peak_vram_mb:     45060.2
-mfu_percent:      39.80
-total_tokens_M:   499.6
-num_steps:        953
-num_params_M:     50.3
-depth:            8
+test_r2:                     0.123456
+test_mae:                    0.123456
+test_mse:                    0.123456
+base_case_true_time:         0.638551
+best_predicted_time:         0.600000
+best_true_time:              0.590000
+delta_vs_base_true:          0.048551
+delta_vs_base_true_pct:      7.603
+loss_plot:                   results/brachistochrone/training_loss.png
+curve_plot:                  results/brachistochrone/curve_comparison.png
+prediction_plot:             results/brachistochrone/test_predictions.png
+summary_json:                results/brachistochrone/train_summary.json
 ```
 
-Note that the script is configured to always stop after 5 minutes, so depending on the computing platform of this computer the numbers might look different. You can extract the key metric from the log file:
+Treat `test_r2`, `test_mae`, and `test_mse` as the primary metrics.
+Use `best_true_time` and `curve_plot` as secondary checks to confirm that the
+surrogate behaves sensibly when optimized.
 
-```
-grep "^val_bpb:" run.log
-```
+## Logging Results
 
-## Logging results
+After each experiment, append one row to `results.tsv` using tab separation.
 
-When an experiment is done, log it to `results.tsv` (tab-separated, NOT comma-separated — commas break in descriptions).
+Header:
 
-The TSV has a header row and 5 columns:
-
-```
-commit	val_bpb	memory_gb	status	description
+```text
+commit	test_r2	test_mae	test_mse	true_time	predicted_time	decision	change
 ```
 
-1. git commit hash (short, 7 chars)
-2. val_bpb achieved (e.g. 1.234567) — use 0.000000 for crashes
-3. peak memory in GB, round to .1f (e.g. 12.3 — divide peak_vram_mb by 1024) — use 0.0 for crashes
-4. status: `keep`, `discard`, or `crash`
-5. short text description of what this experiment tried
+Columns:
 
-Example:
+1. short git commit hash
+2. held-out `test_r2`
+3. held-out `test_mae`
+4. held-out `test_mse`
+5. true travel time of the optimized trajectory
+6. surrogate-predicted travel time of the optimized trajectory
+7. `keep`, `discard`, or `crash`
+8. short description of what changed in `train.py`
 
-```
-commit	val_bpb	memory_gb	status	description
-a1b2c3d	0.997900	44.0	keep	baseline
-b2c3d4e	0.993200	44.2	keep	increase LR to 0.04
-c3d4e5f	1.005000	44.0	discard	switch to GeLU activation
-d4e5f6g	0.000000	0.0	crash	double model width (OOM)
-```
+## Notes
 
-## The experiment loop
+After each experiment, write a short note to `notes.md`.
 
-The experiment runs on a dedicated branch (e.g. `autoresearch/mar5` or `autoresearch/mar5-gpu0`).
+Each note should include:
 
-LOOP FOREVER:
+- experiment number
+- commit hash
+- what was changed
+- key metrics:
+  - `test_r2`
+  - `test_mae`
+  - `test_mse`
+  - `true_time`
+  - `predicted_time`
+- the decision: `keep`, `discard`, or `crash`
+- one sentence about what to try next
 
-1. Look at the git state: the current branch/commit we're on
-2. Tune `train.py` with an experimental idea by directly hacking the code.
-3. git commit
-4. Run the experiment: `uv run train.py > run.log 2>&1` (redirect everything — do NOT use tee or let output flood your context)
-5. Read out the results: `grep "^val_bpb:\|^peak_vram_mb:" run.log`
-6. If the grep output is empty, the run crashed. Run `tail -n 50 run.log` to read the Python stack trace and attempt a fix. If you can't get things to work after more than a few attempts, give up.
-7. Record the results in the tsv (NOTE: do not commit the results.tsv file, leave it untracked by git)
-8. If val_bpb improved (lower), you "advance" the branch, keeping the git commit
-9. If val_bpb is equal or worse, you git reset back to where you started
+Keep `notes.md` untracked by git.
 
-The idea is that you are a completely autonomous researcher trying things out. If they work, keep. If they don't, discard. And you're advancing the branch so that you can iterate. If you feel like you're getting stuck in some way, you can rewind but you should probably do this very very sparingly (if ever).
+## Experiment Loop
 
-**Timeout**: Each experiment should take ~5 minutes total (+ a few seconds for startup and eval overhead). If a run exceeds 10 minutes, kill it and treat it as a failure (discard and revert).
+For each iteration:
 
-**Crashes**: If a run crashes (OOM, or a bug, or etc.), use your judgment: If it's something dumb and easy to fix (e.g. a typo, a missing import), fix it and re-run. If the idea itself is fundamentally broken, just skip it, log "crash" as the status in the tsv, and move on.
+1. Check the current git state.
+2. Make one focused change to `train.py`.
+3. Commit the change.
+4. Run:
+   `/home/andylee/.venvs/auto-cfd-cpu/bin/python train.py > run.log 2>&1`
+5. If the run crashes, inspect and fix:
+   `tail -n 50 run.log`
+6. Read the final metrics from `run.log` or from:
+   `results/brachistochrone/train_summary.json`
+7. Append a row to `results.tsv`.
+8. Append a note to `notes.md`.
+9. Keep the commit only if held-out surrogate quality improved. Use `test_r2`
+   first, then `test_mae` and `test_mse` as tie-breakers. Use downstream
+   optimized-trajectory behavior only as a secondary sanity check. Otherwise
+   revert to the previous good commit.
+10. If the result improved and the commit is kept, push it to git immediately so
+    the best result is preserved remotely.
+11. On every kept improvement:
+    - `git add train.py` only if those files were
+      intentionally changed
+    - create a normal commit
+    - push the branch immediately
+    - do not add generated data, plots, summaries, logs, or dataset files
 
-**NEVER STOP**: Once the experiment loop has begun (after the initial setup), do NOT pause to ask the human if you should continue. Do NOT ask "should I keep going?" or "is this a good stopping point?". The human might be asleep, or gone from a computer and expects you to continue working *indefinitely* until you are manually stopped. You are autonomous. If you run out of ideas, think harder — read papers referenced in the code, re-read the in-scope files for new angles, try combining previous near-misses, try more radical architectural changes. The loop runs until the human interrupts you, period.
+## General Guidance
 
-As an example use case, a user might leave you running while they sleep. If each experiment takes you ~5 minutes then you can run approx 12/hour, for a total of about 100 over the duration of the average human sleep. The user then wakes up to experimental results, all completed by you while they slept!
+- Keep changes small and attributable.
+- Prefer simple ideas before complex ones.
+- Increase model complexity gradually. Do not jump straight to a large network.
+- Reuse the same dataset for the whole run.
+- Review both metrics and plots. A result that looks numerically good but
+  produces a visibly strange optimized curve is suspicious.
+- Use branch history plus `results.tsv` and `notes.md` to inspect progression
+  over time. The git history should represent the sequence of kept model
+  improvements; generated artifacts stay local and untracked.
+- Do not stop to ask whether to continue once the loop begins unless the run is
+  blocked by something external.

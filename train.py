@@ -1,5 +1,5 @@
 """
-Brachistochrone surrogate training and optimization.
+Minimal brachistochrone surrogate baseline.
 
 Usage:
     python train.py
@@ -18,9 +18,8 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 
 from prepare import (
-    DATASET_PATH,
     BATCH_SIZE as DEFAULT_BATCH_SIZE,
-    G,
+    DATASET_PATH,
     RESULTS_DIR,
     X0,
     X1,
@@ -33,25 +32,26 @@ from prepare import (
     straight_line_trajectory,
 )
 
-# Keep the baseline deliberately simple.
-BATCH_SIZE = DEFAULT_BATCH_SIZE  # Match the saved dataset default unless overridden.
-EPOCHS = 400                     # Training passes over the surrogate dataset.
-LEARNING_RATE = 1e-3             # Optimizer step size for the surrogate weights.
-SEED = 42                        # Reproducible training and optimization behavior.
-OPT_STEPS = 500                  # Gradient steps taken on the design vector.
-OPT_LR = 2e-2                    # Step size when optimizing the curve through the surrogate.
-HIDDEN_DIM = 128                 # Width of the hidden layers in the MLP surrogate.
-SMOOTHNESS_WEIGHT = 1.0          # Penalize large second differences in the optimized curve.
+BATCH_SIZE = 64
+EPOCHS = 320
+LEARNING_RATE = 0.0017
+SEED = 42
+OPT_STEPS = 300
+OPT_LR = 0.01
+HIDDEN_DIM = 80
+NUM_HIDDEN_LAYERS = 1
+ACTIVATION = "gelu"
+WEIGHT_DECAY = 0.0
 
-# Output files for the training run.
 SUMMARY_PATH = os.path.join(RESULTS_DIR, "train_summary.json")
 LOSS_PLOT_PATH = os.path.join(RESULTS_DIR, "training_loss.png")
 CURVE_PLOT_PATH = os.path.join(RESULTS_DIR, "curve_comparison.png")
 PREDICTION_PLOT_PATH = os.path.join(RESULTS_DIR, "test_predictions.png")
 
 
-def clamp_design(y_interior: torch.Tensor) -> torch.Tensor:
-    return y_interior.clamp(Y_MIN, Y0)
+def set_seed(seed: int) -> None:
+    torch.manual_seed(seed)
+    np.random.seed(seed)
 
 
 def build_trajectory(interior_y_values: np.ndarray) -> np.ndarray:
@@ -60,42 +60,6 @@ def build_trajectory(interior_y_values: np.ndarray) -> np.ndarray:
     x_values = np.concatenate(([X0], interior_x_values, [X1])).astype(np.float64)
     y_values = np.concatenate(([Y0], interior_y_values, [Y1])).astype(np.float64)
     return np.column_stack((x_values, y_values))
-
-
-def augment_design_with_endpoints(y_interior: torch.Tensor) -> torch.Tensor:
-    y0 = torch.full((y_interior.size(0), 1), Y0, dtype=y_interior.dtype, device=y_interior.device)
-    y1 = torch.full((y_interior.size(0), 1), Y1, dtype=y_interior.dtype, device=y_interior.device)
-    return torch.cat((y0, y_interior, y1), dim=1)
-
-
-def design_from_drop_logits(drop_logits: torch.Tensor) -> torch.Tensor:
-    total_drop = Y0 - Y1
-    drops = F.softmax(drop_logits, dim=1) * total_drop
-    cumulative_drop = torch.cumsum(drops[:, :-1], dim=1)
-    return Y0 - cumulative_drop
-
-
-def normalize_design(y_interior: torch.Tensor, stats: dict[str, torch.Tensor]) -> torch.Tensor:
-    return (y_interior - stats["x_mean"].to(y_interior.device)) / stats["x_std"].to(y_interior.device)
-
-
-def denormalize_time(pred_time_norm: torch.Tensor, stats: dict[str, torch.Tensor]) -> torch.Tensor:
-    return pred_time_norm * stats["t_std"].to(pred_time_norm.device) + stats["t_mean"].to(pred_time_norm.device)
-
-
-def make_dataloaders(batch_size: int = BATCH_SIZE) -> tuple[DataLoader, DataLoader, dict[str, torch.Tensor], dict[str, object]]:
-    payload = load_dataset(DATASET_PATH)
-    train_dataset = TensorDataset(payload["x_train"], payload["t_train"])
-    test_dataset = TensorDataset(payload["x_test"], payload["t_test"])
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-    stats = {
-        "x_mean": payload["x_mean"],
-        "x_std": payload["x_std"],
-        "t_mean": payload["t_mean"],
-        "t_std": payload["t_std"],
-    }
-    return train_loader, test_loader, stats, payload
 
 
 def solve_cycloid_parameters() -> tuple[float, float]:
@@ -129,31 +93,52 @@ def solve_cycloid_parameters() -> tuple[float, float]:
 def cycloid_curve(num_points: int = 400) -> tuple[np.ndarray, np.ndarray]:
     radius, theta_end = solve_cycloid_parameters()
     theta = np.linspace(0.0, theta_end, num_points, dtype=np.float64)
-    x = X0 + radius * (theta - np.sin(theta))
-    y = Y0 - radius * (1.0 - np.cos(theta))
-    return x, y
+    x_values = X0 + radius * (theta - np.sin(theta))
+    y_values = Y0 - radius * (1.0 - np.cos(theta))
+    return x_values, y_values
 
 
-def cycloid_time() -> float:
-    radius, theta_end = solve_cycloid_parameters()
-    return float(theta_end * np.sqrt(radius / G))
+def normalize_design(y_interior: torch.Tensor, stats: dict[str, torch.Tensor]) -> torch.Tensor:
+    return (y_interior - stats["x_mean"].to(y_interior.device)) / stats["x_std"].to(y_interior.device)
 
 
-def set_seed(seed: int) -> None:
-    torch.manual_seed(seed)
-    np.random.seed(seed)
+def denormalize_time(pred_time_norm: torch.Tensor, stats: dict[str, torch.Tensor]) -> torch.Tensor:
+    return pred_time_norm * stats["t_std"].to(pred_time_norm.device) + stats["t_mean"].to(pred_time_norm.device)
 
 
-class MLPSurrogate(nn.Module):
+def make_dataloaders(batch_size: int = BATCH_SIZE) -> tuple[DataLoader, DataLoader, dict[str, torch.Tensor], dict[str, object]]:
+    payload = load_dataset(DATASET_PATH)
+    train_dataset = TensorDataset(payload["x_train"], payload["t_train"])
+    test_dataset = TensorDataset(payload["x_test"], payload["t_test"])
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    stats = {
+        "x_mean": payload["x_mean"],
+        "x_std": payload["x_std"],
+        "t_mean": payload["t_mean"],
+        "t_std": payload["t_std"],
+    }
+    return train_loader, test_loader, stats, payload
+
+
+class SmallMLP(nn.Module):
     def __init__(self, input_dim: int, hidden_dim: int = HIDDEN_DIM) -> None:
         super().__init__()
-        self.network = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, 1),
-        )
+        if ACTIVATION == "relu":
+            activation_factory = nn.ReLU
+        elif ACTIVATION == "gelu":
+            activation_factory = nn.GELU
+        else:
+            activation_factory = nn.Tanh
+
+        layers: list[nn.Module] = []
+        in_dim = input_dim
+        for _ in range(NUM_HIDDEN_LAYERS):
+            layers.append(nn.Linear(in_dim, hidden_dim))
+            layers.append(activation_factory())
+            in_dim = hidden_dim
+        layers.append(nn.Linear(in_dim, 1))
+        self.network = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.network(x)
@@ -161,21 +146,21 @@ class MLPSurrogate(nn.Module):
 
 def evaluate_model(
     model: nn.Module,
-    loader: torch.utils.data.DataLoader,
+    loader: DataLoader,
     stats: dict[str, torch.Tensor],
     device: torch.device,
-) -> tuple[float, float, dict[str, float], np.ndarray, np.ndarray]:
+) -> tuple[float, dict[str, float], np.ndarray, np.ndarray]:
     model.eval()
     losses = []
     pred_batches = []
     target_batches = []
+
     with torch.no_grad():
         for xb, yb in loader:
             xb = xb.to(device)
             yb = yb.to(device)
             pred = model(xb)
-            loss = F.mse_loss(pred, yb)
-            losses.append(loss.item())
+            losses.append(F.mse_loss(pred, yb).item())
             pred_batches.append(denormalize_time(pred, stats).cpu())
             target_batches.append(denormalize_time(yb, stats).cpu())
 
@@ -186,22 +171,17 @@ def evaluate_model(
     ss_res = float(np.sum((targets - preds) ** 2))
     ss_tot = float(np.sum((targets - targets.mean()) ** 2))
     r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
-    metrics = {"mse": mse, "mae": mae, "r2": r2}
-    return float(np.mean(losses)), mae, metrics, preds, targets
+    return float(np.mean(losses)), {"mse": mse, "mae": mae, "r2": r2}, preds, targets
 
 
 def train_surrogate(
     model: nn.Module,
-    train_loader: torch.utils.data.DataLoader,
-    test_loader: torch.utils.data.DataLoader,
+    train_loader: DataLoader,
+    test_loader: DataLoader,
     stats: dict[str, torch.Tensor],
     device: torch.device,
 ) -> tuple[list[float], list[float], dict[str, float], np.ndarray, np.ndarray, int]:
-    optimizer = torch.optim.Adam(
-        model.parameters(),
-        lr=LEARNING_RATE,
-    )
-
+    optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
     train_losses: list[float] = []
     test_losses: list[float] = []
     best_test_loss = float("inf")
@@ -226,9 +206,7 @@ def train_surrogate(
             count += xb.size(0)
 
         train_losses.append(running_loss / count)
-        test_loss, _, test_metrics, preds, targets = evaluate_model(
-            model, test_loader, stats, device
-        )
+        test_loss, test_metrics, preds, targets = evaluate_model(model, test_loader, stats, device)
         test_losses.append(test_loss)
         if test_loss < best_test_loss:
             best_test_loss = test_loss
@@ -245,71 +223,53 @@ def train_surrogate(
             )
 
     model.load_state_dict(best_state)
-    _, _, final_metrics, preds, targets = evaluate_model(model, test_loader, stats, device)
+    _, final_metrics, preds, targets = evaluate_model(model, test_loader, stats, device)
     return train_losses, test_losses, final_metrics, preds, targets, best_epoch
+
+
+def clamp_design(y_interior: torch.Tensor) -> torch.Tensor:
+    return y_interior.clamp(Y_MIN, Y0)
 
 
 def optimize_design(
     model: nn.Module,
     stats: dict[str, torch.Tensor],
     device: torch.device,
-) -> tuple[np.ndarray, float, list[float]]:
+) -> tuple[np.ndarray, float]:
     model.eval()
     for param in model.parameters():
         param.requires_grad_(False)
 
-    initial_design = torch.tensor(
+    design = torch.tensor(
         straight_line_trajectory()[1:-1, 1],
         dtype=torch.float32,
         device=device,
     ).unsqueeze(0)
-    initial_drops = torch.full(
-        (1, initial_design.size(1) + 1),
-        (Y0 - Y1) / (initial_design.size(1) + 1),
-        dtype=torch.float32,
-        device=device,
-    )
-    drop_logits = nn.Parameter(initial_drops.log())
-    optimizer = torch.optim.Adam([drop_logits], lr=OPT_LR)
+    design = nn.Parameter(design)
+    optimizer = torch.optim.Adam([design], lr=OPT_LR)
 
     best_pred_time = float("inf")
-    best_design = None
-    pred_history: list[float] = []
+    best_design = design.detach().cpu().numpy().reshape(-1)
 
     for step in range(1, OPT_STEPS + 1):
         optimizer.zero_grad(set_to_none=True)
-        current_design = design_from_drop_logits(drop_logits)
-        pred_norm = model(normalize_design(current_design, stats))
+        pred_norm = model(normalize_design(design, stats))
         pred_time = denormalize_time(pred_norm, stats).mean()
-        full_design = augment_design_with_endpoints(current_design)
-        smoothness_penalty = (
-            full_design[:, 2:] - 2.0 * full_design[:, 1:-1] + full_design[:, :-2]
-        ).pow(2).mean()
-        objective = pred_time + SMOOTHNESS_WEIGHT * smoothness_penalty
-        objective.backward()
+        pred_time.backward()
         optimizer.step()
 
         with torch.no_grad():
-            current_design = design_from_drop_logits(drop_logits).detach().clone()
-            current_pred = float(
-                denormalize_time(
-                    model(normalize_design(current_design, stats)),
-                    stats,
-                ).item()
-            )
+            design.copy_(clamp_design(design))
+            current_pred = float(denormalize_time(model(normalize_design(design, stats)), stats).item())
 
-        pred_history.append(current_pred)
         if current_pred < best_pred_time:
             best_pred_time = current_pred
-            best_design = current_design.detach().cpu().numpy().reshape(-1)
+            best_design = design.detach().cpu().numpy().reshape(-1)
 
         if step == 1 or step % 100 == 0 or step == OPT_STEPS:
             print(f"opt_step {step:04d} | predicted_time: {current_pred:.6f}")
 
-    if best_design is None:
-        raise RuntimeError("Optimization did not produce a valid design.")
-
-    return best_design, best_pred_time, pred_history
+    return best_design, best_pred_time
 
 
 def save_training_plot(train_losses: list[float], test_losses: list[float]) -> None:
@@ -326,20 +286,20 @@ def save_training_plot(train_losses: list[float], test_losses: list[float]) -> N
 
 
 def save_curve_plot(best_design: np.ndarray) -> None:
-    opt_trajectory = build_trajectory(best_design)
+    base_trajectory = straight_line_trajectory()
+    best_trajectory = build_trajectory(best_design)
     x_cyc, y_cyc = cycloid_curve()
-    line_trajectory = straight_line_trajectory()
 
     plt.figure(figsize=(7, 5))
-    plt.plot(x_cyc, y_cyc, label="Cycloid", linewidth=2.5)
-    plt.plot(opt_trajectory[:, 0], opt_trajectory[:, 1], "o-", label="Surrogate-optimal", linewidth=2)
-    plt.plot(line_trajectory[:, 0], line_trajectory[:, 1], "--", label="Straight line", linewidth=1.5)
+    plt.plot(x_cyc, y_cyc, color="black", linewidth=2.0, label="Cycloid reference")
+    plt.plot(base_trajectory[:, 0], base_trajectory[:, 1], "--", linewidth=1.5, label="Baseline")
+    plt.plot(best_trajectory[:, 0], best_trajectory[:, 1], "o-", linewidth=2.0, label="Surrogate optimum")
     plt.scatter([X0, X1], [Y0, Y1], color="black", zorder=3)
     plt.xlabel("x")
     plt.ylabel("y")
-    plt.title("Brachistochrone Curve Comparison")
-    plt.legend()
+    plt.title("Baseline vs Surrogate Curve")
     plt.grid(alpha=0.2)
+    plt.legend()
     plt.tight_layout()
     plt.savefig(CURVE_PLOT_PATH, dpi=160)
     plt.close()
@@ -361,8 +321,8 @@ def save_prediction_plot(preds: np.ndarray, targets: np.ndarray) -> None:
 
 
 def save_summary(summary: dict[str, object]) -> None:
-    with open(SUMMARY_PATH, "w", encoding="utf-8") as f:
-        json.dump(summary, f, indent=2)
+    with open(SUMMARY_PATH, "w", encoding="utf-8") as file:
+        json.dump(summary, file, indent=2)
 
 
 def main() -> None:
@@ -379,47 +339,50 @@ def main() -> None:
     stats = {key: value.to(device) for key, value in stats.items()}
 
     input_dim = int(payload["x_train"].shape[1])
-    model = MLPSurrogate(input_dim).to(device)
-
+    model = SmallMLP(input_dim).to(device)
     print(
-        f"Training surrogate | model=mlp | input_dim={input_dim} | hidden_dim={HIDDEN_DIM} | epochs={EPOCHS}"
+        f"Training surrogate | model=mlp | input_dim={input_dim} | hidden_dim={HIDDEN_DIM} | "
+        f"layers={NUM_HIDDEN_LAYERS} | activation={ACTIVATION} | epochs={EPOCHS}"
     )
+
     train_losses, test_losses, test_metrics, preds, targets, best_epoch = train_surrogate(
         model, train_loader, test_loader, stats, device
     )
+    best_design, best_predicted_time = optimize_design(model, stats, device)
 
-    best_design, surrogate_pred_time, pred_history = optimize_design(model, stats, device)
-    true_opt_time = calculate_travel_time(build_trajectory(best_design))
-    straight_time = calculate_travel_time(straight_line_trajectory())
-    true_cycloid = cycloid_time()
+    base_true_time = calculate_travel_time(straight_line_trajectory())
+    best_true_time = calculate_travel_time(build_trajectory(best_design))
+    delta_vs_base_true = base_true_time - best_true_time
+    delta_vs_base_true_percent = 100.0 * delta_vs_base_true / base_true_time
 
     save_training_plot(train_losses, test_losses)
     save_curve_plot(best_design)
     save_prediction_plot(preds, targets)
 
-    gap_pct = 100.0 * (true_opt_time - true_cycloid) / true_cycloid
     summary = {
         "train_config": {
             "model": "mlp",
             "hidden_dim": HIDDEN_DIM,
+            "num_hidden_layers": NUM_HIDDEN_LAYERS,
+            "activation": ACTIVATION,
             "batch_size": BATCH_SIZE,
             "epochs": EPOCHS,
             "best_epoch": best_epoch,
             "learning_rate": LEARNING_RATE,
+            "weight_decay": WEIGHT_DECAY,
             "seed": SEED,
         },
         "optimization_config": {
             "steps": OPT_STEPS,
             "learning_rate": OPT_LR,
-            "smoothness_weight": SMOOTHNESS_WEIGHT,
         },
         "test_metrics": test_metrics,
         "times": {
-            "straight_line_time": straight_time,
-            "surrogate_predicted_opt_time": surrogate_pred_time,
-            "surrogate_opt_true_time": true_opt_time,
-            "cycloid_time": true_cycloid,
-            "true_gap_percent_vs_cycloid": gap_pct,
+            "base_case_true_time": base_true_time,
+            "best_predicted_time": best_predicted_time,
+            "best_true_time": best_true_time,
+            "delta_vs_base_true": delta_vs_base_true,
+            "delta_vs_base_true_percent": delta_vs_base_true_percent,
         },
         "paths": {
             "loss_plot": LOSS_PLOT_PATH,
@@ -427,7 +390,6 @@ def main() -> None:
             "prediction_plot": PREDICTION_PLOT_PATH,
         },
         "optimized_design": best_design.tolist(),
-        "optimization_trace": pred_history,
     }
     save_summary(summary)
 
@@ -435,11 +397,11 @@ def main() -> None:
     print(f"test_r2:                     {test_metrics['r2']:.6f}")
     print(f"test_mae:                    {test_metrics['mae']:.6f}")
     print(f"test_mse:                    {test_metrics['mse']:.6f}")
-    print(f"straight_line_time:          {straight_time:.6f}")
-    print(f"surrogate_predicted_opt:     {surrogate_pred_time:.6f}")
-    print(f"surrogate_opt_true_time:     {true_opt_time:.6f}")
-    print(f"cycloid_time:                {true_cycloid:.6f}")
-    print(f"gap_vs_cycloid_percent:      {gap_pct:.3f}")
+    print(f"base_case_true_time:         {base_true_time:.6f}")
+    print(f"best_predicted_time:         {best_predicted_time:.6f}")
+    print(f"best_true_time:              {best_true_time:.6f}")
+    print(f"delta_vs_base_true:          {delta_vs_base_true:.6f}")
+    print(f"delta_vs_base_true_pct:      {delta_vs_base_true_percent:.3f}")
     print(f"loss_plot:                   {LOSS_PLOT_PATH}")
     print(f"curve_plot:                  {CURVE_PLOT_PATH}")
     print(f"prediction_plot:             {PREDICTION_PLOT_PATH}")

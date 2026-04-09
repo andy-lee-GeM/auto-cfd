@@ -8,6 +8,7 @@ wheels/
 
 # Virtual environments
 .venv
+.venv-cpu/
 worktrees/
 results/
 queue/
@@ -19,5 +20,8 @@ AGENTS.md
 # Experimental code/artifacts
 dev/
 
-# Results file
+# Experiment logs and local notes
 results.tsv
+notes.md
+run.log
+*.log
