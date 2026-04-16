@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "auto-cfd"
 version = "0.1.0"
@@ -7,4 +11,8 @@ requires-python = ">=3.10"
 dependencies = [
     "numpy>=2.2.6",
     "h5py>=3.14.0",
+    "pyCGNS>=6.3.5",
 ]
+
+[tool.setuptools.packages.find]
+where = ["src"]

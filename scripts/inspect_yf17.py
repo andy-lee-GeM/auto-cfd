@@ -26,8 +26,8 @@ try:
 except ImportError as exc:  # pragma: no cover - depends on local environment
     raise SystemExit(
         "pyCGNS is not installed in this environment.\n"
-        "Install it in the repo venv first, for example:\n"
-        "  ./.venv/bin/pip install pyCGNS"
+        "Sync the project environment first, for example:\n"
+        "  uv sync"
     ) from exc
 
 

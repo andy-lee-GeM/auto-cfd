@@ -1,28 +1,64 @@
 # auto-cfd
 
-Workspace for CGNS exploration, query-library design, and solver-output
-post-processing.
+Workspace for CGNS exploration and a Python-first CFD point-query library.
+
+## V1 Query Library
+
+The first implementation is intentionally narrow:
+
+- one CGNS file
+- one unstructured zone
+- one vertex-based `FlowSolution`
+- tetrahedral volume elements
+- happy-path `query_point(x, y, z, fields)`
+
+Public API:
+
+```python
+from auto_cfd import open_cgns
+
+dataset = open_cgns("data/yf17_hdf5.cgns")
+point = dataset.query_point(0.1, 0.2, 0.3, ["Pressure", "Temperature"])
+```
 
 ## Layout
 
-- `cgns-concept/`: read-only exploration scripts against real CGNS inputs.
-- `data/`: local CGNS sample data used for exploration and future fixtures.
-- `post_processing/`: downstream parsing, plotting, and reporting utilities.
+- `src/auto_cfd/`: core library code
+- `scripts/inspect_yf17.py`: CGNS tree/field inspection utility
+- `scripts/demo_query_point.py`: end-to-end happy-path query demo
+- `tests/test_query_point_integration.py`: integration test against the sample file
+- `data/`: local CGNS sample data
 
-## Current Focus
+## Development
 
-The active development track in this repo is a Python-first CGNS query library:
-load a CGNS file, inspect zones and fields, and eventually query interpolated
-state at physical coordinates.
+This repo is `uv`-first. Use `uv` to create the project environment, install
+dependencies, and run commands in that environment.
 
-The current exploratory entry point is:
+Initial setup:
 
 ```bash
-uv run python cgns-concept/inspect_yf17.py
+uv sync
 ```
 
-## Repository Conventions
+After that, prefer `uv run ...` over invoking `python` directly so the command
+always uses the project environment and installed dependencies.
 
-- Keep CGNS parsing and query work separate from one-off analysis scripts.
-- Keep large generated artifacts out of source directories.
-- Use `post_processing/` for downstream utilities, not core query-library code.
+## Run It
+
+Inspect the sample file:
+
+```bash
+uv run python scripts/inspect_yf17.py data/yf17_hdf5.cgns
+```
+
+Run the point-query demo:
+
+```bash
+uv run python scripts/demo_query_point.py data/yf17_hdf5.cgns
+```
+
+Run the integration test:
+
+```bash
+uv run python -m unittest discover -s tests
+```
